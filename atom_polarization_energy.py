@@ -24,7 +24,7 @@ E0 = jnp.array([0.] * 3)
 # localization threshold
 LOC_TOL = 1.e-10
 # basis set
-BASIS = 'pcseg-1'
+BASIS = 'aug-pcseg-1'
 # orbitals and population method
 MOS = ['pm']
 POP_METHODS = ['mulliken','iao']
@@ -72,7 +72,6 @@ def prop_tot(mol, mf, mo_coeff, mo_occ, weights):
 
     # print('rdm1_eff', rdm1_eff)
     
-    prop_nuc_rep = _e_nuc(mol)
 
     # core hamiltonian
     kin, nuc, sub_nuc, ext = _h_core(mf, mol)
@@ -98,12 +97,11 @@ def prop_tot(mol, mf, mo_coeff, mo_occ, weights):
         rdm1_atom = jnp.sum(rdm1_atom, axis=0)
         
         exch = -jnp.einsum('ij,ij', vk, rdm1_atom) * 0.5
-        coul = jnp.einsum('ij,ij', vj, rdm1_atom) * 0.5
+        coul = jnp.einsum('ij,ij', vj, rdm1_atom)
         kinetic = jnp.einsum('ij,ij', kin, rdm1_atom)
-        nuc_att_glob = jnp.einsum('xij,ij', sub_nuc, rdm1_tot)*0.5  # maybe wrong
-        nuc_att_loc = jnp.einsum('ij,ij', nuc, rdm1_atom)*0.5
+        nuc_att_loc = jnp.einsum('ij,ij', nuc, rdm1_atom) * 0.5
         external = jnp.einsum('ij,ij', ext, rdm1_atom)
-        elec = kinetic + exch + coul + nuc_att_glob + nuc_att_loc + external
+        elec = kinetic + exch + coul + nuc_att_loc + external
         
         return elec
     
@@ -111,35 +109,12 @@ def prop_tot(mol, mf, mo_coeff, mo_occ, weights):
     # perform decomposition
     res = jax.vmap(prop_atom, (1,))(weights)
     
-    res += prop_nuc_rep
+    nuc_att_glob = jnp.einsum('xij,ij->x', sub_nuc, rdm1_tot) * 0.5  # maybe wrong
     
+    res = res + nuc_att_glob
+         
     return res
 
-
-def contract(eqn, *tensors):
-        """
-        interface to optimized einsum operation
-        """
-        # if OE_AVAILABLE:
-        #     return oe.contract(eqn, *tensors)
-        # else:
-        #     return jnp.einsum(eqn, *tensors, optimize=True)
-        return jnp.einsum(eqn, *tensors, optimize=True)
-
-
-def _e_nuc(mol: gto.Mole) ->jnp.ndarray:
-        """
-        this function returns the nuclear repulsion energy
-        """
-        # coordinates and charges of nuclei
-        coords = mol.atom_coords()
-        charges = mol.atom_charges()
-        # internuclear distances (with self-repulsion removed)
-        dist = gto.mole.distance_matrix(coords)
-        #dist = gto.inter_distance(mol)
-        #dist[jnp.diag_indices_from(dist)] = 1e200
-        e_nuc = contract('i,ij,j->i', charges, 1. / dist, charges) * .5
-        return e_nuc
 
 def _h_core(mf: scf.hf.SCF, mol: gto.Mole):
         """
@@ -212,8 +187,14 @@ for mol_name, geom, pol_ref in zip(MOLS, GEOMS, POL_REFS):
             mol.verbose = 3
             mol.build(trace_coords=False, trace_exp=False, trace_ctr_coeff=False)
             # atomic polarizability
-            pol = jnp.sum(jacrev(jacrev(energy))(E0, mol, mo, pop_method), axis=0)
+            # atomic polarizability
+            pol_full = -jacrev(jacrev(energy))(E0, mol, mo, pop_method)
+            
+            pol = jnp.sum(pol_full, axis=0)
+            
+            pol1 = jnp.trace(pol) / 3.
             # assert differences
             print(f'{mol_name:} / {mo:} / {pop_method:}:')
-            print('total polarizabilities:\n', pol - pol_ref)
-            print('isotropic polarizabilities:\n', (jnp.trace(pol) - jnp.trace(pol_ref)) / 3.)
+            # print('total polarizabilities:\n', pol1)
+            print('total polarizabilities:\n', pol)
+            print('isotropic polarizabilities:\n', pol1)
